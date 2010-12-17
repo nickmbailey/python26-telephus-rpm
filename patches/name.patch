@@ -1,0 +1,11 @@
+--- a/setup.py	2010-12-17 21:42:11.000000000 +0000
++++ b/setup.py	2010-12-17 21:46:06.000000000 +0000
+@@ -2,7 +2,7 @@
+ 
+ from distutils.core import setup
+ setup(
+-    name='telephus',
++    name='python26-telephus',
+     version='0.7~rc2',
+     description='connection pooled, low-level client API for Cassandra in Twisted python',
+     author='brandon@faltering.com',

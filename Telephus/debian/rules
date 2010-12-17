@@ -1,0 +1,43 @@
+#!/usr/bin/make -f
+
+# Verbose mode
+#export DH_VERBOSE=1
+
+PYVERS := $(shell pyversions -s)
+
+clean:
+	dh_testdir
+	dh_testroot
+	
+	rm -f build-stamp install-stamp
+	rm -rf build
+	find . -name "*.py[co]" -exec rm -f {} \;
+	
+	dh_clean
+
+build: build-stamp
+build-stamp:
+	dh_testdir
+	dh_installdirs
+	
+	./check_ver.sh
+	set -e; \
+	    python setup.py install --root $(CURDIR)/debian/python-telephus
+	
+	touch build-stamp
+
+binary-arch:
+binary-indep: build
+	dh_installdocs
+	dh_installchangelogs
+	dh_compress
+	dh_fixperms
+	dh_pysupport
+	dh_gencontrol
+	dh_installdeb
+	dh_md5sums
+	dh_builddeb
+
+binary: binary-arch binary-indep
+.PHONY: build clean binary-indep binary-arch binary
+

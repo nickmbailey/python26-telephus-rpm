@@ -8,6 +8,7 @@ ORIG_NAME="Telephus"
 NAME="python26-telephus"
 RELEASE=1
 PACKAGER="Nick Bailey - nick@riptano.com"
+DOC_FILES="README, LICENSE"
 REQUIRES=""
 BUILD_REQUIRES=""
 
@@ -25,7 +26,8 @@ python2.6 setup.py bdist_rpm \
         --python="python2.6" \
         --dist-dir="$CUR_DIR" \
         --release="$RELEASE" \
-        --packager="$PACKAGER" 
+        --packager="$PACKAGER" \
+        --doc-files="$DOC_FILES"
 cd ..
 
 rm -r "$CUR_DIR/$NAME"

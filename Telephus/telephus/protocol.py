@@ -3,8 +3,10 @@ from thrift.protocol import TBinaryProtocol
 from twisted.internet.protocol import ReconnectingClientFactory
 from twisted.internet import defer, reactor
 from twisted.internet.error import UserError
+from twisted.python import failure
 from telephus.cassandra import Cassandra, constants
 from telephus.cassandra.ttypes import *
+from sys import exc_info
 
 class ClientBusy(Exception):
     pass
@@ -48,11 +50,8 @@ class ManagedThriftClientProtocol(TTwisted.ThriftClientProtocol):
     def connectionMade(self):
         TTwisted.ThriftClientProtocol.connectionMade(self)
         self.client.protocol = self
-        d = self.setupConnection()
-        d.addCallbacks(
-            (lambda res: self.factory.clientIdle(self, res)),
-            self.setupFailed
-        )
+        self.setupConnection() \
+            .addCallbacks(self.setupComplete, self.setupFailed)
 
     def setupConnection(self):
         d = defer.succeed(True)
@@ -67,6 +66,10 @@ class ManagedThriftClientProtocol(TTwisted.ThriftClientProtocol):
         if self.keyspace:
             d.addCallback(lambda _: self.client.set_keyspace(self.keyspace))
         return d
+
+    def setupComplete(self, res=None):
+        self.factory.resetDelay()
+        self.factory.clientIdle(self, res)
 
     def setupFailed(self, err):
         self.transport.loseConnection()
@@ -111,7 +114,7 @@ class AuthenticatedThriftClientProtocol(ManagedThriftClientProtocol):
         return d
 
 class ManagedCassandraClientFactory(ReconnectingClientFactory):
-    maxDelay = 5
+    maxDelay = 45
     thriftFactory = TBinaryProtocol.TBinaryProtocolAcceleratedFactory
     protocol = ManagedThriftClientProtocol
     check_api_version = False
@@ -165,7 +168,6 @@ class ManagedCassandraClientFactory(ReconnectingClientFactory):
         p.factory = self
         if self.check_api_version:
             p.check_api_version = self.check_api_version
-        self.resetDelay()
         return p
 
     def clientGone(self, proto):
@@ -194,6 +196,15 @@ class ManagedCassandraClientFactory(ReconnectingClientFactory):
         def reqError(err, req, d, r):
             if isinstance(err, InvalidRequestException) or \
                isinstance(err, InvalidThriftRequest) or r < 1:
+                if err.tb is None:
+                    try:
+                        raise err.value
+                    except Exception:
+                        # make new Failure object explicitly, so that the same
+                        # (traceback-less) one made by Thrift won't be retained
+                        # and useful tracebacks thrown away
+                        t, v, tb = exc_info()
+                        err = failure.Failure(v, t, tb)
                 d.errback(err)
                 self._pending.remove(d)
             else:

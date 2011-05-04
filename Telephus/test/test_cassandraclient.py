@@ -3,9 +3,11 @@ from twisted.python.failure import Failure
 from twisted.internet import defer, reactor, error
 from telephus.protocol import ManagedCassandraClientFactory, APIMismatch
 from telephus.client import CassandraClient
-from telephus.cassandra import constants
+from telephus import translate
 from telephus.cassandra.ttypes import *
+from telephus.translate import getAPIVersion, CASSANDRA_08_VERSION
 import os
+import zlib
 
 CONNS = 5
 
@@ -15,6 +17,8 @@ KEYSPACE = 'TelephusTests'
 T_KEYSPACE = 'TelephusTests2'
 CF = 'Standard1'
 SCF = 'Super1'
+COUNTER_CF = 'Counter1'
+SUPERCOUNTER_CF = 'SuperCounter1'
 IDX_CF = 'IdxTestCF'
 T_CF = 'TransientCF'
 T_SCF = 'TransientSCF'
@@ -34,10 +38,13 @@ class CassandraClientTest(unittest.TestCase):
             reactor.connectTCP(HOST, PORT, self.cmanager)
         yield self.cmanager.deferred
 
+        remote_ver = yield self.client.describe_version()
+        self.version = getAPIVersion(remote_ver)
+
         self.my_keyspace = KsDef(
             name=KEYSPACE,
             strategy_class='org.apache.cassandra.locator.SimpleStrategy',
-            replication_factor=1,
+            strategy_options={'replication_factor': '1'},
             cf_defs=[
                 CfDef(
                     keyspace=KEYSPACE,
@@ -61,12 +68,29 @@ class CassandraClientTest(unittest.TestCase):
                             index_type=IndexType.KEYS,
                             index_name='idxCol1')
                     ],
-                    default_validation_class='org.apache.cassandra.db.marshal.BytesType')
+                    default_validation_class='org.apache.cassandra.db.marshal.BytesType'
+                ),
             ]
         )
+        if self.version == CASSANDRA_08_VERSION:
+            self.my_keyspace.cf_defs.extend([
+                CfDef(
+                    keyspace=KEYSPACE,
+                    name=COUNTER_CF,
+                    column_type='Standard',
+                    default_validation_class='org.apache.cassandra.db.marshal.CounterColumnType'
+                ),
+                CfDef(
+                    keyspace=KEYSPACE,
+                    name=SUPERCOUNTER_CF,
+                    column_type='Super',
+                    default_validation_class='org.apache.cassandra.db.marshal.CounterColumnType'
+                ),
+            ])
+
         yield self.client.system_add_keyspace(self.my_keyspace)
         yield self.client.set_keyspace(KEYSPACE)
-    
+
     @defer.inlineCallbacks
     def tearDown(self):
         yield self.client.system_drop_keyspace(self.my_keyspace.name)
@@ -74,9 +98,9 @@ class CassandraClientTest(unittest.TestCase):
         for c in reactor.getDelayedCalls():
             c.cancel()
         reactor.removeAll()
-    
+
     @defer.inlineCallbacks
-    def test_insert_get(self): 
+    def test_insert_get(self):
         yield self.client.insert('test', CF, 'testval', column=COLUMN)
         yield self.client.insert('test2', CF, 'testval2', column=COLUMN)
         yield self.client.insert('test', SCF, 'superval', column=COLUMN, super_column=SCOLUMN)
@@ -97,7 +121,7 @@ class CassandraClientTest(unittest.TestCase):
                                        {COLUMN: 'test', COLUMN2: 'test2'})
         yield self.client.batch_insert('test', SCF,
                                {SCOLUMN: {COLUMN: 'test', COLUMN2: 'test2'}})
-        res = yield self.client.get_slice('test', CF, names=(COLUMN, COLUMN2)) 
+        res = yield self.client.get_slice('test', CF, names=(COLUMN, COLUMN2))
         self.assertEqual(res[0].column.value, 'test')
         self.assertEqual(res[1].column.value, 'test2')
         res = yield self.client.get_slice('test', SCF, names=(COLUMN, COLUMN2),
@@ -106,7 +130,7 @@ class CassandraClientTest(unittest.TestCase):
         self.assertEqual(res[1].column.value, 'test2')
         res = yield self.client.get_count('test', CF)
         self.assertEqual(res, 2)
-        
+
     @defer.inlineCallbacks
     def test_batch_mutate_and_remove(self):
         yield self.client.batch_mutate({'test': {CF: {COLUMN: 'test', COLUMN2: 'test2'}, SCF: { SCOLUMN: { COLUMN: 'test', COLUMN2: 'test2'} } }, 'test2': {CF: {COLUMN: 'test', COLUMN2: 'test2'}, SCF: { SCOLUMN: { COLUMN: 'test', COLUMN2: 'test2'} } } })
@@ -155,7 +179,7 @@ class CassandraClientTest(unittest.TestCase):
         res = yield self.client.multiget(['test', 'test2'], CF, column=COLUMN)
         self.assertEqual(len(res['test']), 0)
         self.assertEqual(len(res['test2']), 0)
-        
+
     @defer.inlineCallbacks
     def test_range_slices(self):
         yield self.client.insert('test', CF, 'testval', column=COLUMN)
@@ -176,17 +200,136 @@ class CassandraClientTest(unittest.TestCase):
         self.assertEquals(res[0].columns[0].column.value,'two')
 
     @defer.inlineCallbacks
+    def test_counter_add(self):
+        if self.version != CASSANDRA_08_VERSION:
+            raise unittest.SkipTest('Counters are not supported in 0.7')
+
+        # test standard column counter
+        yield self.client.add('test', COUNTER_CF, 1, column='col')
+        res = yield self.client.get('test', COUNTER_CF, column='col')
+        self.assertEquals(res.counter_column.value, 1)
+
+        yield self.client.add('test', COUNTER_CF, 1, column='col')
+        res = yield self.client.get('test', COUNTER_CF, column='col')
+        self.assertEquals(res.counter_column.value, 2)
+
+        # test super column counters
+        yield self.client.add('test', SUPERCOUNTER_CF, 1, column='col', super_column='scol')
+        res = yield self.client.get('test', SUPERCOUNTER_CF, column='col', super_column='scol')
+        self.assertEquals(res.counter_column.value, 1)
+
+        yield self.client.add('test', SUPERCOUNTER_CF, 1, column='col', super_column='scol')
+        res = yield self.client.get('test', SUPERCOUNTER_CF, column='col', super_column='scol')
+        self.assertEquals(res.counter_column.value, 2)
+
+    @defer.inlineCallbacks
+    def test_counter_remove(self):
+        if self.version != CASSANDRA_08_VERSION:
+            raise unittest.SkipTest('Counters are not supported in 0.7')
+
+        # test standard column counter
+        yield self.client.add('test', COUNTER_CF, 1, column='col')
+        res = yield self.client.get('test', COUNTER_CF, column='col')
+        self.assertEquals(res.counter_column.value, 1)
+
+        yield self.client.remove_counter('test', COUNTER_CF, column='col')
+        yield self.assertFailure(self.client.get('test', COUNTER_CF, column='col'),
+                                 NotFoundException)
+
+        # test super column counters
+        yield self.client.add('test', SUPERCOUNTER_CF, 1, column='col', super_column='scol')
+        res = yield self.client.get('test', SUPERCOUNTER_CF, column='col', super_column='scol')
+        self.assertEquals(res.counter_column.value, 1)
+
+        yield self.client.remove_counter('test', SUPERCOUNTER_CF,
+                                         column='col', super_column='scol')
+        yield self.assertFailure(self.client.get('test', SUPERCOUNTER_CF,
+                                                 column='col', super_column='scol'),
+                                 NotFoundException)
+
+    @defer.inlineCallbacks
+    def test_cql(self):
+        if self.version != CASSANDRA_08_VERSION:
+            raise unittest.SkipTest('CQL is not supported in 0.7')
+
+        yield self.client.insert('test', CF, 'testval', column='col1')
+        res = yield self.client.get('test', CF, column='col1')
+        self.assertEquals(res.column.value, 'testval')
+
+        query = 'SELECT * from %s where KEY = %s' % (CF, 'test'.encode('hex'))
+        uncompressed_result = yield self.client.execute_cql_query(query, Compression.NONE)
+        self.assertEquals(uncompressed_result.rows[0].columns[0].name, 'col1')
+        self.assertEquals(uncompressed_result.rows[0].columns[0].value, 'testval')
+
+        compressed_query = zlib.compress(query)
+        compressed_result = yield self.client.execute_cql_query(compressed_query, Compression.GZIP)
+        self.assertEquals(uncompressed_result, compressed_result)
+
+    def sleep(self, secs):
+        d = defer.Deferred()
+        reactor.callLater(secs, d.callback, None)
+        return d
+
+    @defer.inlineCallbacks
+    def test_ttls(self):
+        yield self.client.insert('test_ttls', CF, 'testval', column=COLUMN, ttl=1)
+        res = yield self.client.get('test_ttls', CF, column=COLUMN)
+        self.assertEqual(res.column.value, 'testval')
+        yield self.sleep(2)
+        yield self.assertFailure(self.client.get('test_ttls', CF, column=COLUMN), NotFoundException)
+
+        yield self.client.batch_insert('test_ttls', CF, {COLUMN:'testval'}, ttl=1)
+        res = yield self.client.get('test_ttls', CF, column=COLUMN)
+        self.assertEqual(res.column.value, 'testval')
+        yield self.sleep(2)
+        yield self.assertFailure(self.client.get('test_ttls', CF, column=COLUMN), NotFoundException)
+
+        yield self.client.batch_mutate({'test_ttls': {CF: {COLUMN: 'testval'}}}, ttl=1)
+        res = yield self.client.get('test_ttls', CF, column=COLUMN)
+        self.assertEqual(res.column.value, 'testval')
+        yield self.sleep(2)
+        yield self.assertFailure(self.client.get('test_ttls', CF, column=COLUMN), NotFoundException)
+
+    def compare_keyspaces(self, ks1, ks2):
+        self.assertEqual(ks1.name, ks2.name)
+        self.assertEqual(ks1.strategy_class, ks2.strategy_class)
+        self.assertEqual(ks1.cf_defs, ks2.cf_defs)
+
+        def get_rf(ksdef):
+            rf = ksdef.replication_factor
+            if ksdef.strategy_options and \
+               'replication_factor' in ksdef.strategy_options:
+                rf = int(ksdef.strategy_options['replication_factor'])
+            return rf
+
+        def strat_opts_no_rf(ksdef):
+            if not ksdef.strategy_options:
+                return {}
+            opts = ksdef.strategy_options.copy()
+            if 'replication_factor' in ksdef.strategy_options:
+                del opts['replication_factor']
+            return opts
+
+        self.assertEqual(get_rf(ks1), get_rf(ks2))
+        self.assertEqual(strat_opts_no_rf(ks1), strat_opts_no_rf(ks2))
+
+    @defer.inlineCallbacks
     def test_keyspace_manipulation(self):
-        ksdef = KsDef(name=T_KEYSPACE, strategy_class='org.apache.cassandra.locator.SimpleStrategy', replication_factor=1, cf_defs=[])
+        try:
+            yield self.client.system_drop_keyspace(T_KEYSPACE)
+        except InvalidRequestException:
+            pass
+        ksdef = KsDef(name=T_KEYSPACE, strategy_class='org.apache.cassandra.locator.SimpleStrategy', strategy_options={'replication_factor': '1'}, cf_defs=[])
         yield self.client.system_add_keyspace(ksdef)
         ks2 = yield self.client.describe_keyspace(T_KEYSPACE)
-        self.assertEqual(ksdef, ks2)
+        self.compare_keyspaces(ksdef, ks2)
+
         if DO_SYSTEM_RENAMING:
             newname = T_KEYSPACE + '2'
             yield self.client.system_rename_keyspace(T_KEYSPACE, newname)
             ks2 = yield self.client.describe_keyspace(newname)
             ksdef.name = newname
-            self.assertEqual(ksdef, ks2)
+            self.compare_keyspaces(ksdef, ks2)
         yield self.client.system_drop_keyspace(ksdef.name)
         yield self.assertFailure(self.client.describe_keyspace(T_KEYSPACE), NotFoundException)
         if DO_SYSTEM_RENAMING:
@@ -204,6 +347,7 @@ class CassandraClientTest(unittest.TestCase):
             column_metadata=[],
             gc_grace_seconds=86400,
             default_validation_class='org.apache.cassandra.db.marshal.BytesType',
+            key_validation_class='org.apache.cassandra.db.marshal.BytesType',
             min_compaction_threshold=5,
             max_compaction_threshold=31,
             row_cache_save_period_in_seconds=0,
@@ -211,10 +355,23 @@ class CassandraClientTest(unittest.TestCase):
             memtable_flush_after_mins=60,
             memtable_throughput_in_mb=249,
             memtable_operations_in_millions=1.1671875,
+            replicate_on_write=False,
+            merge_shards_chance=0.10000000000000001,
+            row_cache_provider=None,
+            key_alias=None,
         )
+        post_07_fields = ['replicate_on_write', 'merge_shards_chance',
+                          'key_validation_class', 'row_cache_provider', 'key_alias']
+
         yield self.client.system_add_column_family(cfdef)
         ksdef = yield self.client.describe_keyspace(KEYSPACE)
         cfdef2 = [c for c in ksdef.cf_defs if c.name == T_CF][0]
+
+        for field in post_07_fields:
+            # Most of these are ignored in 0.7, so we can't reliably compare them
+            setattr(cfdef, field, None)
+            setattr(cfdef2, field, None)
+
         # we don't know the id ahead of time. copy the new one so the equality
         # comparison won't fail
         cfdef.id = cfdef2.id
@@ -266,7 +423,7 @@ class CassandraClientTest(unittest.TestCase):
             yield self.client.get('poiqwe', CF, column='foo')
         except Exception, e:
             pass
-    
+
     @defer.inlineCallbacks
     def test_bad_params(self):
         # This test seems to kill the thrift connection, so we're skipping it for now
@@ -289,31 +446,13 @@ class ManagedCassandraClientFactoryTest(unittest.TestCase):
         cmanager.shutdown()
 
     @defer.inlineCallbacks
-    def test_api_check(self):
-        cmanager = ManagedCassandraClientFactory(check_api_version=False)
-        client = CassandraClient(cmanager)
-        conn = reactor.connectTCP(HOST, PORT, cmanager)
-        # we don't necessarily want to force an api match while testing;
-        # get the remote value and pretend ours matches, even if it doesn't
-        ver = yield client.describe_version()
-        cmanager.shutdown()
-
-        constants.VERSION = ver
-        cmanager = ManagedCassandraClientFactory(check_api_version=True)
-        client = CassandraClient(cmanager)
-        d = cmanager.deferred
-        conn = reactor.connectTCP(HOST, PORT, cmanager)
-        yield d
-        # do something innocuous, make sure connection is good
-        yield client.describe_schema_versions()
-        cmanager.shutdown()
-
-    @defer.inlineCallbacks
-    def test_api_mismatch(self):
-        cmanager = ManagedCassandraClientFactory(check_api_version=True)
-        constants.VERSION = '0.0.0'
-        client = CassandraClient(cmanager)
-        d = cmanager.deferred
-        conn = reactor.connectTCP(HOST, PORT, cmanager)
-        yield self.assertFailure(d, APIMismatch)
-        cmanager.shutdown()
+    def test_api_match(self):
+        for version in [translate.CASSANDRA_07_VERSION, translate.CASSANDRA_08_VERSION, None]:
+            cmanager = ManagedCassandraClientFactory(api_version=version)
+            client = CassandraClient(cmanager)
+            d = cmanager.deferred
+            conn = reactor.connectTCP(HOST, PORT, cmanager)
+            yield d
+            # do something innocuous, make sure connection is good
+            yield client.describe_schema_versions()
+            yield cmanager.shutdown()

@@ -36,5 +36,5 @@ python2.6 setup.py bdist_rpm \
         --release="$RELEASE"
 cd ..
 
-rm -r "$CUR_DIR/$NAME"
+rm -rf "$CUR_DIR/$NAME"
 

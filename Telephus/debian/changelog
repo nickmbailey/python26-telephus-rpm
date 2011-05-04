@@ -1,3 +1,34 @@
+python-telephus (0.8.0~beta1) unstable; urgency=low
+
+  * Tyler Hobbs <tyler@datastax.com>:
+    + Compatible with Cassandra 0.7 and 0.8
+    + Add Counter and CQL support
+    + Set self.api_version, not self.version in Protocol
+    + Replace explicit ttypes assignments with * import
+    + Don't compare post-0.7 CfDef attributes in tests
+    + Skip 0.8-specific tests if not running against 0.8
+  * Nick Bailey <nick@riptano.com>:
+    + Fix tests for 0.8
+    + Update thrift definitions for 0.8
+
+ -- paul cannon <paul@riptano.com>  Wed, 04 May 2011 15:21:31 -0500
+
+python-telephus (0.7.1) unstable; urgency=low
+
+  * Tyler Hobbs <tyler@datastax.com>:
+    + Restore compatibility with Python 2.5
+
+ -- paul cannon <paul@riptano.com>  Wed, 30 Mar 2011 12:31:30 -0500
+
+python-telephus (0.7) unstable; urgency=low
+
+  * paul cannon <paul@riptano.com>:
+    + add Cassandra connection pool management module, pool.py
+  * Tyler Hobbs <tyler@datastax.com>:
+    + implement TTL support
+
+ -- paul cannon <paul@riptano.com>  Wed, 09 Mar 2011 16:14:21 -0600
+
 python-telephus (0.7~rc3) unstable; urgency=low
 
   * paul cannon <paul@riptano.com>:
@@ -86,6 +117,12 @@ python-telephus (0.7~beta1) unstable; urgency=low
   * Merge updates from Paul Cannon
 
  -- Brandon Williams <brandon@riptano.com>  Sun, 15 Aug 2010 08:40:00 +0000
+
+python-telephus (0.6.3) unstable; urgency=low
+
+  * Errback when submitRequest raises an Exception
+
+ -- Brandon Williams <brandon@riptano.com>  Thu, 23 Sep 2010 17:57:44 -0500
 
 python-telephus (0.6.2) unstable; urgency=low
 

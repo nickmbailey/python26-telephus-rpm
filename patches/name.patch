@@ -6,7 +6,7 @@ diff -ur Telephus/setup.py new/setup.py
  from distutils.core import setup
  setup(
 -    name='telephus',
-+    name='python-telephus',
++    name='python26-telephus',
      version='0.8.0~beta1',
      description='connection pooled, low-level client API for Cassandra in Twisted python',
      author='brandon@faltering.com',
